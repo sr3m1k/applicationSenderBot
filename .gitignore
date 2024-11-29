@@ -1,2 +1,8 @@
+config.toml
 .toml
+requests.db
 .db
+.idea
+.env
+.mod
+.sum
