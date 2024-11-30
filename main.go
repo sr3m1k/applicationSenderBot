@@ -586,7 +586,6 @@ func spamMessage(bot *tgbotapi.BotAPI, db *sql.DB, table string, originalMessage
 			return err
 		}
 
-		// Копируем оригинальное сообщение без указания отправителя
 		copyMsg := tgbotapi.NewCopyMessage(chatID, originalMessage.Chat.ID, originalMessage.MessageID)
 		_, err = bot.Send(copyMsg)
 		if err != nil {
