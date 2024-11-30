@@ -25,12 +25,12 @@ type Config struct {
 }
 
 var (
-	userStates = make(map[int64]string)
-	tempData   = make(map[int64]int)
-	DB         *sql.DB
-	spamMode   bool
-	spamTarget string
-	config     Config
+	userStates       = make(map[int64]string)
+	tempData         = make(map[int64]int)
+	DB               *sql.DB
+	broadcastMessage string
+	broadcastTarget  string
+	config           Config
 )
 
 func loadConfig() error {
@@ -145,59 +145,68 @@ func handleMessage(bot *tgbotapi.BotAPI, db *sql.DB, message *tgbotapi.Message) 
 		if !isAdmin(userID) {
 			sendMessage(bot, chatID, "Недостаточно прав")
 			return
-		} else {
-			err := addChatToDB(db, "traders", chatID, chatTitle)
-			if err != nil {
-				sendMessage(bot, chatID, "Ошибка при добавлении чата в бд")
-			} else {
-				sendMessage(bot, chatID, "Трейдер")
-			}
-			return
 		}
+		err := addChatToDB(db, "traders", chatID, chatTitle)
+		if err != nil {
+			sendMessage(bot, chatID, "Ошибка при добавлении чата в бд")
+		} else {
+			sendMessage(bot, chatID, "Трейдер")
+		}
+		return
 	}
 
 	if message.Text == "/merch" {
 		if !isAdmin(userID) {
 			sendMessage(bot, chatID, "Недостаточно прав")
 			return
-		} else {
-			err := addChatToDB(db, "merchants", chatID, chatTitle)
-			if err != nil {
-				sendMessage(bot, chatID, "Ошибка при добавлении чата в бд")
-			} else {
-				sendMessage(bot, chatID, "Мерчант")
-			}
-			return
 		}
+		err := addChatToDB(db, "merchants", chatID, chatTitle)
+		if err != nil {
+			sendMessage(bot, chatID, "Ошибка при добавлении чата в бд")
+		} else {
+			sendMessage(bot, chatID, "Мерчант")
+		}
+		return
 	}
 
 	if message.Chat.IsPrivate() {
 		if isUserAllowed(userID) {
-			//if message.Text == "/spam_trader" {
-			//	spamMode = true
-			//	spamTarget = "traders"
-			//	sendMessage(bot, chatID, "Введите текст сообщения для рассылки трейдерам:")
-			//	return
-			//}
-			//
-			//if spamMode && spamTarget == "traders" {
-			//	err := spamMessage(bot, db, "traders", message.Text)
-			//	if err != nil {
-			//		sendMessage(bot, chatID, fmt.Sprintf("Ошибка при рассылке: %v", err))
-			//	} else {
-			//		sendMessage(bot, chatID, "Сообщение успешно отправлено всем трейдерам.")
-			//	}
-			//	spamMode = false
-			//	spamTarget = ""
-			//	return
-			//}
+			state, exists := userStates[chatID]
+
+			// Broadcast message handling
+			if exists && state == "waiting_broadcast_message" {
+				if !isAdmin(userID) {
+					sendMessage(bot, chatID, "Недостаточно прав")
+					return
+				}
+
+				err := spamMessage(bot, db, broadcastTarget, message)
+				if err != nil {
+					sendMessage(bot, chatID, fmt.Sprintf("Ошибка при рассылке: %v", err))
+				} else {
+					sendMessage(bot, chatID, fmt.Sprintf("Сообщение успешно отправлено всем %s.", broadcastTarget))
+				}
+
+				delete(userStates, chatID)
+				broadcastTarget = ""
+				showMainMenu(bot, chatID)
+				return
+			}
 
 			if message.Text == "/start" {
 				showMainMenu(bot, chatID)
 				return
 			}
 
-			state, exists := userStates[chatID]
+			if message.Text == "/admin" {
+				if !isAdmin(userID) {
+					sendMessage(bot, chatID, "Недостаточно прав")
+					return
+				}
+				showAdminMenu(bot, chatID)
+				return
+			}
+
 			if !exists {
 				showMainMenu(bot, chatID)
 				return
@@ -213,6 +222,40 @@ func handleMessage(bot *tgbotapi.BotAPI, db *sql.DB, message *tgbotapi.Message) 
 			}
 		}
 	}
+}
+
+func showAdminMenu(bot *tgbotapi.BotAPI, id int64) {
+	msg := tgbotapi.NewMessage(id, "Выберите действие:")
+	msg.ReplyMarkup = getAdminMenuButton()
+	bot.Send(msg)
+
+}
+
+func getAdminMenuButton() interface{} {
+
+	mainButton := tgbotapi.NewInlineKeyboardButtonData("Сделать рассылку", "send_broadcast")
+	//
+	//traderButton := tgbotapi.NewInlineKeyboardButtonData("Рассылка трейдерам", "broadcast_traders")
+	//merchantButton := tgbotapi.NewInlineKeyboardButtonData("Рассылка мерчам", "broadcast_merchants")
+
+	return tgbotapi.NewInlineKeyboardMarkup(
+		[]tgbotapi.InlineKeyboardButton{mainButton},
+	)
+}
+
+func showBroadcastOptions(bot *tgbotapi.BotAPI, chatID int64) {
+	text := fmt.Sprintf("Выберите кому сделать рассылку")
+
+	keyboard := tgbotapi.NewInlineKeyboardMarkup(
+		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData("Трейдеры", fmt.Sprintf("broadcast_traders")),
+			tgbotapi.NewInlineKeyboardButtonData("Мерчанты", fmt.Sprintf("broadcast_traders")),
+		),
+	)
+
+	msg := tgbotapi.NewMessage(chatID, text)
+	msg.ReplyMarkup = keyboard
+	bot.Send(msg)
 }
 
 func handleCallback(bot *tgbotapi.BotAPI, db *sql.DB, callback *tgbotapi.CallbackQuery) {
@@ -231,6 +274,52 @@ func handleCallback(bot *tgbotapi.BotAPI, db *sql.DB, callback *tgbotapi.Callbac
 	bot.Request(deleteMsg)
 
 	switch {
+
+	case data == "send_broadcast":
+		if !isAdmin(userID) {
+			sendMessage(bot, chatID, "Недостаточно прав")
+			return
+		}
+		showBroadcastOptions(bot, chatID)
+	//case data == "broadcast_traders":
+	//	sendMessage(bot, chatID, "Введите сообщение для рассылки трейдерам:")
+	//	spamMode = true
+	//	spamTarget = "traders"
+	//
+	//	if spamMode {
+	//		if spamTarget == "traders" {
+	//			err := spamMessage(bot, db, "traders", callback.Message.Text)
+	//			if err != nil {
+	//				sendMessage(bot, chatID, fmt.Sprintf("Ошибка при рассылке: %v", err))
+	//			} else {
+	//				sendMessage(bot, chatID, "Сообщение успешно отправлено всем трейдерам.")
+	//			}
+	//		}
+	//
+	//		spamMode = false
+	//		spamTarget = ""
+	//		return
+	//	}
+	//case data == "broadcast_merchants":
+	//	sendMessage(bot, chatID, "Введите сообщение для рассылки мерчам:")
+
+	case data == "broadcast_traders":
+		if !isAdmin(userID) {
+			sendMessage(bot, chatID, "Недостаточно прав")
+			return
+		}
+		broadcastTarget = "traders"
+		sendMessage(bot, chatID, "Введите сообщение для рассылки трейдерам:")
+		userStates[chatID] = "waiting_broadcast_message"
+
+	case data == "broadcast_merchants":
+		if !isAdmin(userID) {
+			sendMessage(bot, chatID, "Недостаточно прав")
+			return
+		}
+		broadcastTarget = "merchants"
+		sendMessage(bot, chatID, "Введите сообщение для рассылки мерчантам:")
+		userStates[chatID] = "waiting_broadcast_message"
 
 	case data == "add_request":
 		userStates[chatID] = "waiting_number"
@@ -484,7 +573,7 @@ func addChatToDB(db *sql.DB, table string, chatID int64, chatTitle string) error
 	return err
 }
 
-func spamMessage(bot *tgbotapi.BotAPI, db *sql.DB, table string, messageText string) error {
+func spamMessage(bot *tgbotapi.BotAPI, db *sql.DB, table string, originalMessage *tgbotapi.Message) error {
 	rows, err := db.Query(fmt.Sprintf("SELECT chat_id FROM %s", table))
 	if err != nil {
 		return err
@@ -497,8 +586,9 @@ func spamMessage(bot *tgbotapi.BotAPI, db *sql.DB, table string, messageText str
 			return err
 		}
 
-		msg := tgbotapi.NewMessage(chatID, messageText)
-		_, err = bot.Send(msg)
+		// Копируем оригинальное сообщение без указания отправителя
+		copyMsg := tgbotapi.NewCopyMessage(chatID, originalMessage.Chat.ID, originalMessage.MessageID)
+		_, err = bot.Send(copyMsg)
 		if err != nil {
 			log.Printf("Не удалось отправить сообщение в чат %d: %v", chatID, err)
 		}
