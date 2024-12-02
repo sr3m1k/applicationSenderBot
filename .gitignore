@@ -1,6 +1,6 @@
 config.toml
 .toml
-requests.db
+data/requests.db
 .db
 .idea
 .env
