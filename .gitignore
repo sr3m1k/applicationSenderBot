@@ -9,3 +9,4 @@ data/requests.db
 requests1.db
 requests0.0.1.db
 requests.db
+.DS_Store
