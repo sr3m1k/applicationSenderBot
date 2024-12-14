@@ -1,9 +1,10 @@
 package botApp
 
 import (
-	"database/sql"
+	"applicationBot/service"
 	"fmt"
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
+	"log"
 	"strconv"
 	"time"
 )
@@ -28,15 +29,14 @@ func getMainMenuButton() tgbotapi.InlineKeyboardMarkup {
 	)
 }
 
-func showRequestDetails(bot *tgbotapi.BotAPI, chatID int64, number int, db *sql.DB) {
-	var comment string
-	err := db.QueryRow("SELECT comment FROM requests WHERE number = ?", number).Scan(&comment)
+func showRequestDetails(bot *tgbotapi.BotAPI, chatID int64, number int, requestService *service.RequestService) {
+	request, err := requestService.GetRequestDetails(number)
 	if err != nil {
-		sendMessage(bot, chatID, "Заявка не найдена")
+		sendMessage(bot, chatID, fmt.Sprintf("Ошибка: %v", err))
 		return
 	}
 
-	text := fmt.Sprintf("Заявка %d\nКомментарий: %s", number, comment)
+	text := fmt.Sprintf("Заявка %d\nКомментарий: %s", request.Number, request.Comment)
 
 	keyboard := tgbotapi.NewInlineKeyboardMarkup(
 		tgbotapi.NewInlineKeyboardRow(
@@ -56,23 +56,24 @@ func showRequestDetails(bot *tgbotapi.BotAPI, chatID int64, number int, db *sql.
 	bot.Send(msg)
 }
 
-func showRequestsList(chatID int64, userID int64, db *sql.DB, bot *tgbotapi.BotAPI) {
-	rows, err := db.Query("SELECT number, comment FROM requests WHERE user_id = ? ORDER BY number", userID)
+func showRequestsList(chatID int64, userID int64, bot *tgbotapi.BotAPI, requestRepo *service.RequestService) {
+	//rows, err := db.Query("SELECT number, comment FROM requests WHERE user_id = ? ORDER BY number", userID)
+
+	requests, err := requestRepo.GetRequestsByUserId(userID)
 	if err != nil {
 		sendMessage(bot, chatID, "Ошибка при получении списка заявок")
 		return
 	}
-	defer rows.Close()
+	if len(requests) == 0 {
+		sendMessage(bot, chatID, "У вас нет заявок")
+		return
+	}
 
 	var buttons [][]tgbotapi.InlineKeyboardButton
-	for rows.Next() {
-		var number int
-		var comment string
-		rows.Scan(&number, &comment)
-
+	for _, req := range requests {
 		button := tgbotapi.NewInlineKeyboardButtonData(
-			fmt.Sprintf("%d", number),
-			fmt.Sprintf("req_%d", number),
+			fmt.Sprintf("%d", req.Number),
+			fmt.Sprintf("req_%d", req.Number),
 		)
 		buttons = append(buttons, []tgbotapi.InlineKeyboardButton{button})
 	}
@@ -87,7 +88,7 @@ func showRequestsList(chatID int64, userID int64, db *sql.DB, bot *tgbotapi.BotA
 	bot.Send(msg)
 }
 
-func handleNumberInput(bot *tgbotapi.BotAPI, db *sql.DB, message *tgbotapi.Message) {
+func handleNumberInput(bot *tgbotapi.BotAPI, message *tgbotapi.Message) {
 	chatID := message.Chat.ID
 	number, err := strconv.Atoi(message.Text)
 	if err != nil {
@@ -100,14 +101,12 @@ func handleNumberInput(bot *tgbotapi.BotAPI, db *sql.DB, message *tgbotapi.Messa
 	sendMessage(bot, chatID, "Введите комментарий к заявке")
 }
 
-func handleCommentInput(bot *tgbotapi.BotAPI, db *sql.DB, message *tgbotapi.Message) {
+func handleCommentInput(bot *tgbotapi.BotAPI, message *tgbotapi.Message, requestService *service.RequestService) {
 	chatID := message.Chat.ID
 	number := tempData[chatID]
 
-	_, err := db.Exec("INSERT INTO requests (number, comment, user_id, username, datetime) VALUES (?, ?, ?, ?,?)",
-		number, message.Text, message.Chat.ID, message.From.UserName, time.Now().Format("2006-01-02 15:04:05"))
-	_, err = db.Exec("INSERT INTO NoDellRequests (number, comment, user_id, username, datetime) VALUES (?, ?, ?, ?, ?)",
-		number, message.Text, message.Chat.ID, message.From.UserName, time.Now().Format("2006-01-02 15:04:05"))
+	err := requestService.CreateRequest(number, message.Text, message.Chat.ID, message.From.UserName, time.Now().Format("2006-01-02 15:04:05"))
+
 	if err != nil {
 		sendMessage(bot, chatID, "Ошибка при добавлении заявки")
 		fmt.Println(err)
@@ -118,19 +117,20 @@ func handleCommentInput(bot *tgbotapi.BotAPI, db *sql.DB, message *tgbotapi.Mess
 	delete(tempData, chatID)
 
 	sendMessage(bot, chatID, "Заявка успешно добавлена")
-	showRequestDetails(bot, chatID, number, db)
-	//showMainMenu(bot, chatID)
+	showRequestDetails(bot, chatID, number, requestService)
+
 }
 
-func deleteRequest(db *sql.DB, bot *tgbotapi.BotAPI, chatID int64, number int) {
-	_, err := db.Exec("DELETE FROM requests WHERE number = ?", number)
+func deleteRequest(bot *tgbotapi.BotAPI, chatID int64, number int, requestService *service.RequestService) {
+	err := requestService.DeleteRequest(number)
 	if err != nil {
-		sendMessage(bot, chatID, "Ошибка при удалении заявки")
+		sendMessage(bot, chatID, "Ошибка при удалении заявки"+err.Error())
 		return
 	}
 
 	msg := tgbotapi.NewMessage(chatID, fmt.Sprintf("Заявка %d успешно удалена", number))
 	bot.Send(msg)
+	getMainMenuButton()
 }
 
 func showTimerOptions(bot *tgbotapi.BotAPI, chatID int64, number int) {
@@ -171,6 +171,27 @@ func setTimer(bot *tgbotapi.BotAPI, chatID int64, number, minutes int) {
 
 		msg := tgbotapi.NewMessage(chatID, text)
 		msg.ReplyMarkup = keyboard
-		bot.Send(msg)
+		_, err := bot.Send(msg)
+		if err != nil {
+			log.Printf("Ошибка отправки сообщения в чат %d: %v", chatID, err)
+		}
 	}(chatID, number, minutes)
+}
+
+func isAdmin(userID int64, Admins []int64) bool {
+	for _, id := range Admins {
+		if userID == id {
+			return true
+		}
+	}
+	return false
+}
+
+func isUserAllowed(userID int64, Users []int64) bool {
+	for _, id := range Users {
+		if userID == id {
+			return true
+		}
+	}
+	return false
 }

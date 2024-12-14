@@ -2,8 +2,10 @@ package main
 
 import (
 	"applicationBot/botApp"
-	"applicationBot/configuration"
+	"applicationBot/config"
 	"applicationBot/database"
+	"applicationBot/repoRequests"
+	"applicationBot/service"
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 	_ "github.com/mattn/go-sqlite3"
 	_ "github.com/pelletier/go-toml"
@@ -11,20 +13,23 @@ import (
 	_ "os"
 )
 
+const (
+	configPath = "config.toml"
+)
+
 func main() {
-	config, err := configuration.LoadConfig()
+	conf, err := config.LoadConfig(configPath)
 	if err != nil {
 		log.Fatalf("Не удалось загрузить конфиг: %v", err)
-	} else {
-		log.Printf("Конфиг успешно загружен")
 	}
+	log.Printf("Конфиг успешно загружен")
 
-	DB, err := database.InitDB()
+	DB, err := database.InitDB(conf.Database.Path)
 	if err != nil {
 		log.Fatalf("Ошибка подключения к БД: %v", err)
-	} else {
-		log.Printf("Установлено подключение к базе данных")
 	}
+	log.Printf("Установлено подключение к базе данных")
+
 	defer func() {
 		err := DB.Close()
 		if err != nil {
@@ -33,12 +38,14 @@ func main() {
 		}
 	}()
 
-	bot, err := tgbotapi.NewBotAPI(config.Bot.Token)
+	requestRepo := repoRequests.NewRequestRepository(DB)
+	requestService := service.NewRequestService(requestRepo)
+
+	bot, err := tgbotapi.NewBotAPI(conf.Bot.Token)
 	if err != nil {
 		log.Fatalf("Ошибка создания бота: %v", err)
-	} else {
-		log.Printf("Бот успешно создан")
 	}
+	log.Printf("Бот успешно создан")
 
-	botApp.StartBot(bot, DB, config)
+	botApp.StartBot(bot, DB, conf, requestRepo, requestService)
 }

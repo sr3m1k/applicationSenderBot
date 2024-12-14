@@ -1,8 +1,10 @@
 package botApp
 
 import (
-	"applicationBot/configuration"
-	"applicationBot/database"
+	"applicationBot/config"
+
+	"applicationBot/repoRequests"
+	"applicationBot/service"
 	"database/sql"
 	"fmt"
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
@@ -14,14 +16,10 @@ import (
 var (
 	userStates      = make(map[int64]string)
 	tempData        = make(map[int64]int)
-	DB              *sql.DB
 	broadcastTarget string
-	//config           Config
-	broadcastMessage string
 )
 
-func handleMessage(bot *tgbotapi.BotAPI, db *sql.DB, message *tgbotapi.Message, config configuration.Config) {
-
+func handleMessage(bot *tgbotapi.BotAPI, db *sql.DB, message *tgbotapi.Message, config config.Config, requestRepo *repoRequests.RequestRepository, reqService *service.RequestService) {
 	if message.Text == "торг" {
 		msg := tgbotapi.NewMessage(message.Chat.ID, "ворк")
 		bot.Send(msg)
@@ -30,6 +28,7 @@ func handleMessage(bot *tgbotapi.BotAPI, db *sql.DB, message *tgbotapi.Message, 
 	chatID := message.Chat.ID
 	userID := message.From.ID
 	chatTitle := message.Chat.Title
+
 	if message.Chat.Type == "private" {
 		if !isUserAllowed(userID, config.Access.Users) {
 			sendMessage(bot, chatID, "Недостаточно прав")
@@ -37,6 +36,7 @@ func handleMessage(bot *tgbotapi.BotAPI, db *sql.DB, message *tgbotapi.Message, 
 		}
 
 	}
+
 	log.Printf("Получено сообщение: ChatType=%s, ChatID=%d, UserID=%d, Username=%s, Text=%s",
 		message.Chat.Type, chatID, userID, message.From.UserName, message.Text)
 
@@ -45,7 +45,7 @@ func handleMessage(bot *tgbotapi.BotAPI, db *sql.DB, message *tgbotapi.Message, 
 			sendMessage(bot, chatID, "Недостаточно прав")
 			return
 		}
-		err := database.AddChatToDB(db, "traders", chatID, chatTitle)
+		err := reqService.AddChat("traders", chatID, chatTitle)
 		if err != nil {
 			sendMessage(bot, chatID, "Ошибка при добавлении чата в бд")
 		} else {
@@ -59,7 +59,7 @@ func handleMessage(bot *tgbotapi.BotAPI, db *sql.DB, message *tgbotapi.Message, 
 			sendMessage(bot, chatID, "Недостаточно прав")
 			return
 		}
-		err := database.AddChatToDB(db, "merchants", chatID, chatTitle)
+		err := reqService.AddChat("merchants", chatID, chatTitle)
 		if err != nil {
 			sendMessage(bot, chatID, "Ошибка при добавлении чата в бд")
 		} else {
@@ -68,61 +68,125 @@ func handleMessage(bot *tgbotapi.BotAPI, db *sql.DB, message *tgbotapi.Message, 
 		return
 	}
 
-	if message.Chat.IsPrivate() {
-		if isUserAllowed(userID, config.Access.Users) {
-			state, exists := userStates[chatID]
-
-			if exists && state == "waiting_broadcast_message" {
-				if !isAdmin(userID, config.Access.Admins) {
-					sendMessage(bot, chatID, "Недостаточно прав")
-					return
-				}
-
-				err := spamMessage(bot, db, broadcastTarget, message)
-				if err != nil {
-					sendMessage(bot, chatID, fmt.Sprintf("Ошибка при рассылке: %v", err))
-				} else {
-					sendMessage(bot, chatID, fmt.Sprintf("Сообщение успешно отправлено всем %s.", broadcastTarget))
-				}
-
-				delete(userStates, chatID)
-				broadcastTarget = ""
-				showMainMenu(bot, chatID)
-				return
-			}
-
-			if message.Text == "/start" {
-				showMainMenu(bot, chatID)
-				return
-			}
-
-			if message.Text == "/admin" {
-				if !isAdmin(userID, config.Access.Admins) {
-					sendMessage(bot, chatID, "Недостаточно прав")
-					return
-				}
-				showAdminMenu(bot, chatID)
-				return
-			}
-
-			if !exists {
-				showMainMenu(bot, chatID)
-				return
-			}
-
-			switch state {
-			case "waiting_number":
-				handleNumberInput(bot, db, message)
-			case "waiting_comment":
-				handleCommentInput(bot, db, message)
-			default:
-				showMainMenu(bot, chatID)
-			}
+	if message.Chat.Type == "private" {
+		if !isUserAllowed(userID, config.Access.Users) {
+			sendMessage(bot, chatID, "Недостаточно прав")
+			return
 		}
+
+		if message.Text == "/start" {
+			showMainMenu(bot, chatID)
+			return
+		}
+
+		if message.Text == "/admin" {
+			handleAdminMenu(bot, userID, chatID, config.Access.Admins)
+			return
+		}
+
+		state, exists := userStates[chatID]
+		if exists {
+			handleState(bot, userID, chatID, state, config.Access.Admins, message, reqService, requestRepo)
+		} else {
+			showMainMenu(bot, chatID)
+		}
+
+	}
+
+	//if message.Chat.IsPrivate() {
+	//	if isUserAllowed(userID, config.Access.Users) {
+	//		state, exists := userStates[chatID]
+	//
+	//		if exists && state == "waiting_broadcast_message" {
+	//			if !isAdmin(userID, config.Access.Admins) {
+	//				sendMessage(bot, chatID, "Недостаточно прав")
+	//				return
+	//			}
+	//
+	//			err := spamMessage(bot, requestService, broadcastTarget, message)
+	//			if err != nil {
+	//				sendMessage(bot, chatID, fmt.Sprintf("Ошибка при рассылке: %v", err))
+	//			} else {
+	//				sendMessage(bot, chatID, fmt.Sprintf("Сообщение успешно отправлено всем %s.", broadcastTarget))
+	//			}
+	//
+	//			delete(userStates, chatID)
+	//			broadcastTarget = ""
+	//			showMainMenu(bot, chatID)
+	//			return
+	//		}
+	//
+	//		if message.Text == "/start" {
+	//			showMainMenu(bot, chatID)
+	//			return
+	//		}
+	//
+	//		if message.Text == "/admin" {
+	//			if !isAdmin(userID, config.Access.Admins) {
+	//				sendMessage(bot, chatID, "Недостаточно прав")
+	//				return
+	//			}
+	//			showAdminMenu(bot, chatID)
+	//			return
+	//		}
+	//
+	//		if !exists {
+	//			showMainMenu(bot, chatID)
+	//			return
+	//		}
+	//
+	//		switch state {
+	//		case "waiting_number":
+	//			handleNumberInput(bot, message)
+	//		case "waiting_comment":
+	//			handleCommentInput(bot, message, requestService)
+	//		default:
+	//			showMainMenu(bot, chatID)
+	//		}
+	//	}
+	//}
+}
+
+func handleAdminMenu(bot *tgbotapi.BotAPI, userID int64, chatID int64, admins []int64) {
+	if !isAdmin(userID, admins) {
+		sendMessage(bot, chatID, "Недостаточно прав")
+		return
+	}
+	showAdminMenu(bot, chatID)
+}
+
+func handleState(bot *tgbotapi.BotAPI, userID int64, chatID int64, state string, admins []int64, message *tgbotapi.Message, requestService *service.RequestService, requestRepo *repoRequests.RequestRepository) {
+	switch state {
+	case "waiting_broadcast_message":
+		handleBroadcastMessage(bot, userID, chatID, admins, message, requestRepo)
+	case "waiting_number":
+		handleNumberInput(bot, message)
+	case "waiting_comment":
+		handleCommentInput(bot, message, requestService)
+	default:
+		showMainMenu(bot, chatID)
 	}
 }
 
-func handleCallback(bot *tgbotapi.BotAPI, db *sql.DB, callback *tgbotapi.CallbackQuery, config configuration.Config) {
+func handleBroadcastMessage(bot *tgbotapi.BotAPI, userID int64, chatID int64, admins []int64, message *tgbotapi.Message, requestRepo *repoRequests.RequestRepository) {
+	if !isAdmin(userID, admins) {
+		sendMessage(bot, chatID, "Недостаточно прав")
+		return
+	}
+
+	err := spamMessage(bot, requestRepo, broadcastTarget, message)
+	if err != nil {
+		sendMessage(bot, chatID, fmt.Sprintf("Ошибка при рассылке: %v", err))
+	} else {
+		sendMessage(bot, chatID, fmt.Sprintf("Сообщение успешно отправлено всем %s.", broadcastTarget))
+	}
+
+	delete(userStates, chatID)
+	broadcastTarget = ""
+	showMainMenu(bot, chatID)
+}
+
+func handleCallback(bot *tgbotapi.BotAPI, callback *tgbotapi.CallbackQuery, config config.Config, requestRepo *service.RequestService) {
 
 	data := callback.Data
 	chatID := callback.Message.Chat.ID
@@ -145,27 +209,6 @@ func handleCallback(bot *tgbotapi.BotAPI, db *sql.DB, callback *tgbotapi.Callbac
 			return
 		}
 		showBroadcastOptions(bot, chatID)
-	//case data == "broadcast_traders":
-	//	sendMessage(bot, chatID, "Введите сообщение для рассылки трейдерам:")
-	//	spamMode = true
-	//	spamTarget = "traders"
-	//
-	//	if spamMode {
-	//		if spamTarget == "traders" {
-	//			err := spamMessage(bot, db, "traders", callback.Message.Text)
-	//			if err != nil {
-	//				sendMessage(bot, chatID, fmt.Sprintf("Ошибка при рассылке: %v", err))
-	//			} else {
-	//				sendMessage(bot, chatID, "Сообщение успешно отправлено всем трейдерам.")
-	//			}
-	//		}
-	//
-	//		spamMode = false
-	//		spamTarget = ""
-	//		return
-	//	}
-	//case data == "broadcast_merchants":
-	//	sendMessage(bot, chatID, "Введите сообщение для рассылки мерчам:")
 
 	case data == "broadcast_traders":
 		if !isAdmin(userID, config.Access.Admins) {
@@ -192,7 +235,7 @@ func handleCallback(bot *tgbotapi.BotAPI, db *sql.DB, callback *tgbotapi.Callbac
 		bot.Send(msg)
 
 	case data == "all_requests":
-		showRequestsList(chatID, userID, db, bot)
+		showRequestsList(chatID, userID, bot, requestRepo)
 
 	case data == "main_menu":
 		showMainMenu(bot, chatID)
@@ -239,7 +282,7 @@ func handleCallback(bot *tgbotapi.BotAPI, db *sql.DB, callback *tgbotapi.Callbac
 			sendMessage(bot, chatID, "Некорректный номер заявки.")
 			return
 		}
-		showRequestDetails(bot, chatID, number, db)
+		showRequestDetails(bot, chatID, number, requestRepo)
 
 	case len(data) > 4 && data[:4] == "del_":
 		numberStr := data[4:]
@@ -248,7 +291,7 @@ func handleCallback(bot *tgbotapi.BotAPI, db *sql.DB, callback *tgbotapi.Callbac
 			sendMessage(bot, chatID, "Некорректный номер заявки.")
 			return
 		}
-		deleteRequest(db, bot, chatID, number)
+		deleteRequest(bot, chatID, number, requestRepo)
 		showMainMenu(bot, chatID)
 
 	}
@@ -257,19 +300,13 @@ func handleCallback(bot *tgbotapi.BotAPI, db *sql.DB, callback *tgbotapi.Callbac
 	bot.Request(callbackConfig)
 }
 
-func spamMessage(bot *tgbotapi.BotAPI, db *sql.DB, table string, originalMessage *tgbotapi.Message) error {
-	rows, err := db.Query(fmt.Sprintf("SELECT chat_id FROM %s", table))
+func spamMessage(bot *tgbotapi.BotAPI, requestService *repoRequests.RequestRepository, table string, originalMessage *tgbotapi.Message) error {
+	chatIDs, err := requestService.GetChatIds(table)
 	if err != nil {
-		return err
+		return fmt.Errorf("ошибка при получении чатов для рассылки: %w", err)
 	}
-	defer rows.Close()
 
-	for rows.Next() {
-		var chatID int64
-		if err := rows.Scan(&chatID); err != nil {
-			return err
-		}
-
+	for _, chatID := range chatIDs {
 		copyMsg := tgbotapi.NewCopyMessage(chatID, originalMessage.Chat.ID, originalMessage.MessageID)
 		_, err = bot.Send(copyMsg)
 		if err != nil {

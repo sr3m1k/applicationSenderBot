@@ -1,4 +1,4 @@
-package configuration
+package config
 
 import (
 	"github.com/pelletier/go-toml"
@@ -14,10 +14,13 @@ type Config struct {
 		Users  []int64 `toml:"users"`
 		Admins []int64 `toml:"admins"`
 	} `toml:"access"`
+	Database struct {
+		Path string `toml:"path"`
+	} `toml:"database"`
 }
 
-func LoadConfig() (Config, error) {
-	file, err := os.Open("config.toml")
+func LoadConfig(configPath string) (Config, error) {
+	file, err := os.Open(configPath)
 	if err != nil {
 		return Config{}, err
 	}

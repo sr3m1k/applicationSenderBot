@@ -30,7 +30,7 @@ func showBroadcastOptions(bot *tgbotapi.BotAPI, chatID int64) {
 	keyboard := tgbotapi.NewInlineKeyboardMarkup(
 		tgbotapi.NewInlineKeyboardRow(
 			tgbotapi.NewInlineKeyboardButtonData("Трейдеры", fmt.Sprintf("broadcast_traders")),
-			tgbotapi.NewInlineKeyboardButtonData("Мерчанты", fmt.Sprintf("broadcast_traders")),
+			tgbotapi.NewInlineKeyboardButtonData("Мерчанты", fmt.Sprintf("broadcast_merchants")),
 		),
 	)
 
